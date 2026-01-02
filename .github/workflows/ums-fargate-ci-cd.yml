@@ -21,20 +21,22 @@ jobs:
       ECS_SERVICE_COURSE: svc-ums-course
       ECS_SERVICE_USER: svc-ums-user
 
-      # Task definition families + container names
-      # User (CONFIRMED)
-      ECS_TASKDEF_FAMILY_USER: ums-user
-      ECS_CONTAINER_USER: user-service
-
-      # TODO: Fill these two from your ECS task definitions (same way you did for user)
+      # Task definition families
       ECS_TASKDEF_FAMILY_ACADEMICS: ums-academics
-      ECS_CONTAINER_ACADEMICS: academics-service
-
-      # TODO: Fill these two from your ECS task definitions
       ECS_TASKDEF_FAMILY_COURSE: ums-course
-      ECS_CONTAINER_COURSE: course-service
+      ECS_TASKDEF_FAMILY_USER: ums-user
 
-      # --- Build contexts (repo folders) ---
+      # Container names (must match ECS exactly)
+      ECS_CONTAINER_USER_SVC: user-service
+      ECS_CONTAINER_USER_PROXY: users-proxy
+
+      ECS_CONTAINER_ACADEMICS_SVC: academics-service
+      ECS_CONTAINER_ACADEMICS_PROXY: academics-proxy
+
+      ECS_CONTAINER_COURSE_SVC: course-service
+      ECS_CONTAINER_COURSE_PROXY: courses-proxy
+
+      # Build contexts (repo folders)
       CTX_ACADEMICS_SVC: ./academics-messaging-service
       CTX_ACADEMICS_PROXY: ./academics-proxy
       CTX_COURSE_SVC: ./course-enrollment-service
@@ -43,7 +45,7 @@ jobs:
       CTX_USER_PROXY: ./user-proxy
       CTX_GATEWAY: ./gateway
 
-      # --- ECR repo names (must match ECR exactly) ---
+      # ECR repo names (must match ECR exactly)
       ECR_ACADEMICS_SVC: academics-messaging-service
       ECR_ACADEMICS_PROXY: academics-proxy
       ECR_COURSE_SVC: course-enrollment-service
@@ -52,7 +54,6 @@ jobs:
       ECR_USER_PROXY: user-proxy
       ECR_GATEWAY: nginx-gateway
 
-      TAG_LATEST: latest
       TAG_SHA: ${{ github.sha }}
 
     steps:
@@ -90,91 +91,151 @@ jobs:
               || aws ecr create-repository --repository-name "$r" >/dev/null
           done
 
-      # -------- Build & Push images --------
+      # ---------------- CI: Build & Push images (tag = commit SHA) ----------------
       - name: Build & push academics service
         run: |
           docker build -t $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_SHA $CTX_ACADEMICS_SVC
-          docker tag  $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_SHA $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_LATEST
           docker push $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_SHA
-          docker push $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_LATEST
 
       - name: Build & push academics proxy (nginx)
         run: |
           docker build -t $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_SHA $CTX_ACADEMICS_PROXY
-          docker tag  $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_SHA $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_LATEST
           docker push $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_SHA
-          docker push $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_LATEST
 
       - name: Build & push course service
         run: |
           docker build -t $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_SHA $CTX_COURSE_SVC
-          docker tag  $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_SHA $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_LATEST
           docker push $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_SHA
-          docker push $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_LATEST
 
       - name: Build & push course proxy (nginx)
         run: |
           docker build -t $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_SHA $CTX_COURSE_PROXY
-          docker tag  $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_SHA $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_LATEST
           docker push $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_SHA
-          docker push $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_LATEST
 
       - name: Build & push user service
         run: |
           docker build -t $ECR_REGISTRY/$ECR_USER_SVC:$TAG_SHA $CTX_USER_SVC
-          docker tag  $ECR_REGISTRY/$ECR_USER_SVC:$TAG_SHA $ECR_REGISTRY/$ECR_USER_SVC:$TAG_LATEST
           docker push $ECR_REGISTRY/$ECR_USER_SVC:$TAG_SHA
-          docker push $ECR_REGISTRY/$ECR_USER_SVC:$TAG_LATEST
 
       - name: Build & push user proxy (nginx)
         run: |
           docker build -t $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_SHA $CTX_USER_PROXY
-          docker tag  $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_SHA $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_LATEST
           docker push $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_SHA
-          docker push $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_LATEST
 
       - name: Build & push gateway
         run: |
           docker build -t $ECR_REGISTRY/$ECR_GATEWAY:$TAG_SHA $CTX_GATEWAY
-          docker tag  $ECR_REGISTRY/$ECR_GATEWAY:$TAG_SHA $ECR_REGISTRY/$ECR_GATEWAY:$TAG_LATEST
           docker push $ECR_REGISTRY/$ECR_GATEWAY:$TAG_SHA
-          docker push $ECR_REGISTRY/$ECR_GATEWAY:$TAG_LATEST
 
-      # -------- CD (AUTO Deploy) : USER SERVICE --------
-      # Download current task definition JSON from ECS
+      # ---------------- CD tools ----------------
+      - name: Install jq
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+      # =========================
+      # CD: USER (2 containers)
+      # =========================
       - name: Download ums-user task definition
         run: |
           aws ecs describe-task-definition --task-definition "$ECS_TASKDEF_FAMILY_USER" --query taskDefinition > taskdef-user.json
 
-      # Clean fields that can't be re-registered
-      - name: Clean task definition JSON (user)
+      - name: Clean ums-user task definition
         run: |
-          sudo apt-get update && sudo apt-get install -y jq
           jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
             taskdef-user.json > taskdef-user.clean.json
 
-      # Inject the new image (use TAG_SHA)
-      - name: Render ums-user task definition (new image)
-        id: render-user
+      - name: Render ums-user (user-service image)
+        id: render-user-svc
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: taskdef-user.clean.json
-          container-name: ${{ env.ECS_CONTAINER_USER }}
+          container-name: ${{ env.ECS_CONTAINER_USER_SVC }}
           image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_USER_SVC }}:${{ env.TAG_SHA }}
 
-      # Register new revision + update service to it
-      - name: Deploy ums-user to ECS
+      - name: Render ums-user (users-proxy image)
+        id: render-user-proxy
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-user-svc.outputs.task-definition }}
+          container-name: ${{ env.ECS_CONTAINER_USER_PROXY }}
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_USER_PROXY }}:${{ env.TAG_SHA }}
+
+      - name: Deploy svc-ums-user (ums-user new revision)
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
-          task-definition: ${{ steps.render-user.outputs.task-definition }}
+          task-definition: ${{ steps.render-user-proxy.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE_USER }}
           cluster: ${{ env.ECS_CLUSTER_NAME }}
           wait-for-service-stability: true
 
-      # -------- TEMP: keep old style for the other services --------
-      # After you tell the container names + taskdef families for academics/course,
-      # we can convert them to the same "download+render+deploy" style like user.
-      - name: Force new deployment (academics + course) [temporary]
+      # =========================
+      # CD: ACADEMICS (2 containers)
+      # =========================
+      - name: Download ums-academics task definition
         run: |
-          aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_SERVICE_ACADEMICS" --force-new-deployment
-          aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_SERVICE_COURSE" --force-new-deployment
+          aws ecs describe-task-definition --task-definition "$ECS_TASKDEF_FAMILY_ACADEMICS" --query taskDefinition > taskdef-academics.json
+
+      - name: Clean ums-academics task definition
+        run: |
+          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
+            taskdef-academics.json > taskdef-academics.clean.json
+
+      - name: Render ums-academics (service image)
+        id: render-academics-svc
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: taskdef-academics.clean.json
+          container-name: ${{ env.ECS_CONTAINER_ACADEMICS_SVC }}
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_ACADEMICS_SVC }}:${{ env.TAG_SHA }}
+
+      - name: Render ums-academics (proxy image)
+        id: render-academics-proxy
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-academics-svc.outputs.task-definition }}
+          container-name: ${{ env.ECS_CONTAINER_ACADEMICS_PROXY }}
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_ACADEMICS_PROXY }}:${{ env.TAG_SHA }}
+
+      - name: Deploy svc-ums-academics (ums-academics new revision)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-academics-proxy.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE_ACADEMICS }}
+          cluster: ${{ env.ECS_CLUSTER_NAME }}
+          wait-for-service-stability: true
+
+      # =========================
+      # CD: COURSE (2 containers)
+      # =========================
+      - name: Download ums-course task definition
+        run: |
+          aws ecs describe-task-definition --task-definition "$ECS_TASKDEF_FAMILY_COURSE" --query taskDefinition > taskdef-course.json
+
+      - name: Clean ums-course task definition
+        run: |
+          jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
+            taskdef-course.json > taskdef-course.clean.json
+
+      - name: Render ums-course (service image)
+        id: render-course-svc
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: taskdef-course.clean.json
+          container-name: ${{ env.ECS_CONTAINER_COURSE_SVC }}
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_COURSE_SVC }}:${{ env.TAG_SHA }}
+
+      - name: Render ums-course (proxy image)
+        id: render-course-proxy
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-course-svc.outputs.task-definition }}
+          container-name: ${{ env.ECS_CONTAINER_COURSE_PROXY }}
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_COURSE_PROXY }}:${{ env.TAG_SHA }}
+
+      - name: Deploy svc-ums-course (ums-course new revision)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-course-proxy.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE_COURSE }}
+          cluster: ${{ env.ECS_CLUSTER_NAME }}
+          wait-for-service-stability: true
