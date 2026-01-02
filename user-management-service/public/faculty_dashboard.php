@@ -12,7 +12,7 @@ if (!isset($_SESSION['faculty'])) {
 $faculty = $_SESSION['faculty'];
 $faculty_id = $faculty['id'];
 
-// Fetch faculty's courses with schedules
+//i Fetch faculty's courses with schedules
 $courses = $conn->query("
     SELECT c.course_code, c.course_name, 
            GROUP_CONCAT(

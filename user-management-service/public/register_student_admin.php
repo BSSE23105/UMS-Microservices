@@ -22,7 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $age = $_POST['age'];
     $gender = $_POST['gender'];
 
-    // Validate ID
+    // its Validate ID
     if (!is_numeric($id)) {
         $error = 'ID must be a number';
     } else {
