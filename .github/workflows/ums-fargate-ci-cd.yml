@@ -1,0 +1,129 @@
+name: UMS Fargate CI/CD
+
+on:
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: ums-fargate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_push_deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      ECS_CLUSTER_NAME: ums-cluster
+
+      # ECS service names (your screenshot)
+      ECS_SERVICE_ACADEMICS: svc-ums-academics
+      ECS_SERVICE_COURSE: svc-ums-course
+      ECS_SERVICE_USER: svc-ums-user
+
+      # --- Build contexts (your repo folders) ---
+      CTX_ACADEMICS_SVC: ./academics-messaging-service
+      CTX_ACADEMICS_PROXY: ./academics-proxy
+      CTX_COURSE_SVC: ./course-enrollment-service
+      CTX_COURSE_PROXY: ./course-proxy
+      CTX_USER_SVC: ./user-management-service
+      CTX_USER_PROXY: ./user-proxy
+      CTX_GATEWAY: ./gateway
+
+      # --- ECR repo names (EDIT these to match your ECR repositories exactly) ---
+      # Recommend keeping repo names same as folders; but if your ECR names differ, update here.
+      ECR_ACADEMICS_SVC: academics-messaging-service
+      ECR_ACADEMICS_PROXY: academics-proxy
+      ECR_COURSE_SVC: course-enrollment-service
+      ECR_COURSE_PROXY: course-proxy
+      ECR_USER_SVC: user-management-service
+      ECR_USER_PROXY: user-proxy
+      ECR_GATEWAY: gateway
+
+      # Tag strategy:
+      # - latest makes ECS redeploy easy if task defs reference :latest
+      # - github.sha gives you traceability
+      TAG_LATEST: latest
+      TAG_SHA: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Learner Lab uses temporary credentials, so session token must be included. [web:48]
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Export ECR registry
+        run: echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_ENV
+
+      # -------- Build & Push (service + proxy images) --------
+      - name: Build & push academics service
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_SHA $CTX_ACADEMICS_SVC
+          docker tag $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_SHA $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_LATEST
+          docker push $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_SHA
+          docker push $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_LATEST
+
+      - name: Build & push academics proxy (nginx)
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_SHA $CTX_ACADEMICS_PROXY
+          docker tag $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_SHA $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_LATEST
+          docker push $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_SHA
+          docker push $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_LATEST
+
+      - name: Build & push course service
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_SHA $CTX_COURSE_SVC
+          docker tag $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_SHA $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_LATEST
+          docker push $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_SHA
+          docker push $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_LATEST
+
+      - name: Build & push course proxy (nginx)
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_SHA $CTX_COURSE_PROXY
+          docker tag $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_SHA $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_LATEST
+          docker push $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_SHA
+          docker push $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_LATEST
+
+      - name: Build & push user service
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_USER_SVC:$TAG_SHA $CTX_USER_SVC
+          docker tag $ECR_REGISTRY/$ECR_USER_SVC:$TAG_SHA $ECR_REGISTRY/$ECR_USER_SVC:$TAG_LATEST
+          docker push $ECR_REGISTRY/$ECR_USER_SVC:$TAG_SHA
+          docker push $ECR_REGISTRY/$ECR_USER_SVC:$TAG_LATEST
+
+      - name: Build & push user proxy (nginx)
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_SHA $CTX_USER_PROXY
+          docker tag $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_SHA $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_LATEST
+          docker push $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_SHA
+          docker push $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_LATEST
+
+      - name: Build & push gateway
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_GATEWAY:$TAG_SHA $CTX_GATEWAY
+          docker tag $ECR_REGISTRY/$ECR_GATEWAY:$TAG_SHA $ECR_REGISTRY/$ECR_GATEWAY:$TAG_LATEST
+          docker push $ECR_REGISTRY/$ECR_GATEWAY:$TAG_SHA
+          docker push $ECR_REGISTRY/$ECR_GATEWAY:$TAG_LATEST
+
+      # -------- Deploy: force ECS to pull the newest images --------
+      # --force-new-deployment triggers a new deployment even without changing the service definition. [web:10]
+      - name: Force new deployment (ECS)
+        run: |
+          aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_SERVICE_ACADEMICS" --force-new-deployment
+          aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_SERVICE_COURSE" --force-new-deployment
+          aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_SERVICE_USER" --force-new-deployment
+
+      - name: Wait until services are stable
+        run: |
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER_NAME" --services "$ECS_SERVICE_ACADEMICS" "$ECS_SERVICE_COURSE" "$ECS_SERVICE_USER"
