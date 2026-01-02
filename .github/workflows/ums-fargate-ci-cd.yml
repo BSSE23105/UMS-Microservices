@@ -117,7 +117,7 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_GATEWAY:$TAG_LATEST
 
       # -------- Deploy: force ECS to pull the newest images --------
-      # --force-new-deployment triggers a new deployment even without changing the service definition. [web:10]
+      # -- hello force-new-deployment triggers a new deployment even without changing the service definition. [web:10]
       - name: Force new deployment (ECS)
         run: |
           aws ecs update-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_SERVICE_ACADEMICS" --force-new-deployment
