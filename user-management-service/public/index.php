@@ -360,7 +360,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['role'] ?? '') === 'admin')
             </button>
           </div>
           <button type="submit" class="w-full itu-accent text-white py-2 rounded-lg hover:opacity-90 transition font-medium">
-    Sign In as gasta
+    Sign In as facult
   </button>
         </form>
         <p class="mt-6 text-center">
