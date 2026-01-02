@@ -38,7 +38,7 @@ jobs:
       ECR_COURSE_PROXY: course-proxy
       ECR_USER_SVC: user-management-service
       ECR_USER_PROXY: user-proxy
-      ECR_GATEWAY: ngnix-gateway
+      ECR_GATEWAY: nginx-gateway
 
       # Tag strategy:
       # - latest makes ECS redeploy easy if task defs reference :latest
