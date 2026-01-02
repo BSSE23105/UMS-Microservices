@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  academics-messaging-service:
+    build: .
+    ports:
+      - "8083:80"
+    environment:
+      DB_HOST: mysql
+      DB_DATABASE: ums
+      DB_USERNAME: umsuser
+      DB_PASSWORD: umspassword
+      JWT_SECRET: localdev
+    depends_on:
+      - mysql
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ums
+      MYSQL_USER: umsuser
+      MYSQL_PASSWORD: umspassword
+    ports:
+      - "3309:3306"
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d
