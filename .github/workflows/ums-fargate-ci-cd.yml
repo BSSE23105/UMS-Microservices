@@ -204,9 +204,9 @@ jobs:
           cluster: ${{ env.ECS_CLUSTER_NAME }}
           wait-for-service-stability: true
 
-      # =========================
+      # ==========================
       # CD: COURSE (2 containers)
-      # =========================
+      # ==========================
       - name: Download ums-course task definition
         run: |
           aws ecs describe-task-definition --task-definition "$ECS_TASKDEF_FAMILY_COURSE" --query taskDefinition > taskdef-course.json
