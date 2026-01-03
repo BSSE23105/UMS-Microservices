@@ -9,8 +9,76 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build_push_deploy:
+  changes:
+    name: Detect changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    outputs:
+      shared: ${{ steps.filter.outputs.shared }}
+      academics: ${{ steps.filter.outputs.academics }}
+      course: ${{ steps.filter.outputs.course }}
+      user: ${{ steps.filter.outputs.user }}
+      gateway: ${{ steps.filter.outputs.gateway }}
+      any: ${{ steps.any.outputs.any }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Paths filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          filters: |
+            # Shared changes (run all)
+            shared:
+              - ".github/workflows/**"
+              - "docker-compose.yml"
+              - "db/**"
+
+            # Service-level changes (treat service+proxy as one unit)
+            academics:
+              - "academics-messaging-service/**"
+              - "academics-proxy/**"
+
+            course:
+              - "course-enrollment-service/**"
+              - "course-proxy/**"
+
+            user:
+              - "user-management-service/**"
+              - "user-proxy/**"
+
+            gateway:
+              - "gateway/**"
+
+      - name: Compute any
+        id: any
+        run: |
+          if [[ "${{ steps.filter.outputs.shared }}" == "true" || \
+                "${{ steps.filter.outputs.academics }}" == "true" || \
+                "${{ steps.filter.outputs.course }}" == "true" || \
+                "${{ steps.filter.outputs.user }}" == "true" || \
+                "${{ steps.filter.outputs.gateway }}" == "true" ]]; then
+            echo "any=true" >> $GITHUB_OUTPUT
+          else
+            echo "any=false" >> $GITHUB_OUTPUT
+          fi
+
+  build_push_deploy:
+    name: Build, push, deploy
+    needs: changes
+    if: needs.changes.outputs.any == 'true'
+    runs-on: ubuntu-latest
+
+    # Needed for Docker GHA caching in some repos; safe to keep even if not required.
+    permissions:
+      contents: read
+      actions: write
 
     env:
       AWS_REGION: us-east-1
@@ -75,6 +143,9 @@ jobs:
       - name: Export ECR registry
         run: echo "ECR_REGISTRY=${{ steps.login-ecr.outputs.registry }}" >> $GITHUB_ENV
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Ensure ECR repositories exist
         run: |
           REPOS=(
@@ -91,60 +162,106 @@ jobs:
               || aws ecr create-repository --repository-name "$r" >/dev/null
           done
 
-      # ---------------- CI: Build & Push images (tag = commit SHA) ----------------
+      # =========================
+      # CI: Build & Push (only changed)
+      # =========================
+
+      # ---- Academics (svc + proxy) ----
       - name: Build & push academics service
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_SHA $CTX_ACADEMICS_SVC
-          docker push $ECR_REGISTRY/$ECR_ACADEMICS_SVC:$TAG_SHA
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.academics == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CTX_ACADEMICS_SVC }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_ACADEMICS_SVC }}:${{ env.TAG_SHA }}
+          cache-from: type=gha,scope=ums-academics-svc
+          cache-to: type=gha,mode=max,scope=ums-academics-svc
 
-      - name: Build & push academics proxy (nginx)
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_SHA $CTX_ACADEMICS_PROXY
-          docker push $ECR_REGISTRY/$ECR_ACADEMICS_PROXY:$TAG_SHA
+      - name: Build & push academics proxy
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.academics == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CTX_ACADEMICS_PROXY }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_ACADEMICS_PROXY }}:${{ env.TAG_SHA }}
+          cache-from: type=gha,scope=ums-academics-proxy
+          cache-to: type=gha,mode=max,scope=ums-academics-proxy
 
+      # ---- Course (svc + proxy) ----
       - name: Build & push course service
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_SHA $CTX_COURSE_SVC
-          docker push $ECR_REGISTRY/$ECR_COURSE_SVC:$TAG_SHA
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.course == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CTX_COURSE_SVC }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_COURSE_SVC }}:${{ env.TAG_SHA }}
+          cache-from: type=gha,scope=ums-course-svc
+          cache-to: type=gha,mode=max,scope=ums-course-svc
 
-      - name: Build & push course proxy (nginx)
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_SHA $CTX_COURSE_PROXY
-          docker push $ECR_REGISTRY/$ECR_COURSE_PROXY:$TAG_SHA
+      - name: Build & push course proxy
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.course == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CTX_COURSE_PROXY }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_COURSE_PROXY }}:${{ env.TAG_SHA }}
+          cache-from: type=gha,scope=ums-course-proxy
+          cache-to: type=gha,mode=max,scope=ums-course-proxy
 
+      # ---- User (svc + proxy) ----
       - name: Build & push user service
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_USER_SVC:$TAG_SHA $CTX_USER_SVC
-          docker push $ECR_REGISTRY/$ECR_USER_SVC:$TAG_SHA
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.user == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CTX_USER_SVC }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_USER_SVC }}:${{ env.TAG_SHA }}
+          cache-from: type=gha,scope=ums-user-svc
+          cache-to: type=gha,mode=max,scope=ums-user-svc
 
-      - name: Build & push user proxy (nginx)
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_SHA $CTX_USER_PROXY
-          docker push $ECR_REGISTRY/$ECR_USER_PROXY:$TAG_SHA
+      - name: Build & push user proxy
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.user == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CTX_USER_PROXY }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_USER_PROXY }}:${{ env.TAG_SHA }}
+          cache-from: type=gha,scope=ums-user-proxy
+          cache-to: type=gha,mode=max,scope=ums-user-proxy
 
+      # ---- Gateway (image only; deploy step not included because ECS gateway service name not provided) ----
       - name: Build & push gateway
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_GATEWAY:$TAG_SHA $CTX_GATEWAY
-          docker push $ECR_REGISTRY/$ECR_GATEWAY:$TAG_SHA
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.gateway == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CTX_GATEWAY }}
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_GATEWAY }}:${{ env.TAG_SHA }}
+          cache-from: type=gha,scope=ums-gateway
+          cache-to: type=gha,mode=max,scope=ums-gateway
 
-      # ---------------- CD tools ----------------
+      # =========================
+      # CD: Deploy (only changed)
+      # =========================
       - name: Install jq
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.user == 'true' || needs.changes.outputs.academics == 'true' || needs.changes.outputs.course == 'true'
         run: |
           sudo apt-get update && sudo apt-get install -y jq
 
-      # =========================
-      # CD: USER (2 containers)
-      # =========================
+      # ---- USER deploy (2 containers) ----
       - name: Download ums-user task definition
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.user == 'true'
         run: |
           aws ecs describe-task-definition --task-definition "$ECS_TASKDEF_FAMILY_USER" --query taskDefinition > taskdef-user.json
 
       - name: Clean ums-user task definition
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.user == 'true'
         run: |
           jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
             taskdef-user.json > taskdef-user.clean.json
 
       - name: Render ums-user (user-service image)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.user == 'true'
         id: render-user-svc
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
@@ -153,6 +270,7 @@ jobs:
           image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_USER_SVC }}:${{ env.TAG_SHA }}
 
       - name: Render ums-user (users-proxy image)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.user == 'true'
         id: render-user-proxy
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
@@ -161,6 +279,7 @@ jobs:
           image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_USER_PROXY }}:${{ env.TAG_SHA }}
 
       - name: Deploy svc-ums-user (ums-user new revision)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.user == 'true'
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.render-user-proxy.outputs.task-definition }}
@@ -168,19 +287,20 @@ jobs:
           cluster: ${{ env.ECS_CLUSTER_NAME }}
           wait-for-service-stability: true
 
-      # =========================
-      # CD: ACADEMICS (2 containers)
-      # =========================
+      # ---- ACADEMICS deploy (2 containers) ----
       - name: Download ums-academics task definition
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.academics == 'true'
         run: |
           aws ecs describe-task-definition --task-definition "$ECS_TASKDEF_FAMILY_ACADEMICS" --query taskDefinition > taskdef-academics.json
 
       - name: Clean ums-academics task definition
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.academics == 'true'
         run: |
           jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
             taskdef-academics.json > taskdef-academics.clean.json
 
       - name: Render ums-academics (service image)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.academics == 'true'
         id: render-academics-svc
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
@@ -189,6 +309,7 @@ jobs:
           image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_ACADEMICS_SVC }}:${{ env.TAG_SHA }}
 
       - name: Render ums-academics (proxy image)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.academics == 'true'
         id: render-academics-proxy
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
@@ -197,6 +318,7 @@ jobs:
           image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_ACADEMICS_PROXY }}:${{ env.TAG_SHA }}
 
       - name: Deploy svc-ums-academics (ums-academics new revision)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.academics == 'true'
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.render-academics-proxy.outputs.task-definition }}
@@ -204,19 +326,20 @@ jobs:
           cluster: ${{ env.ECS_CLUSTER_NAME }}
           wait-for-service-stability: true
 
-      # ==========================
-      # CD: COURSE (2 containers)
-      # ==========================
+      # ---- COURSE deploy (2 containers) ----
       - name: Download ums-course task definition
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.course == 'true'
         run: |
           aws ecs describe-task-definition --task-definition "$ECS_TASKDEF_FAMILY_COURSE" --query taskDefinition > taskdef-course.json
 
       - name: Clean ums-course task definition
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.course == 'true'
         run: |
           jq 'del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
             taskdef-course.json > taskdef-course.clean.json
 
       - name: Render ums-course (service image)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.course == 'true'
         id: render-course-svc
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
@@ -225,6 +348,7 @@ jobs:
           image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_COURSE_SVC }}:${{ env.TAG_SHA }}
 
       - name: Render ums-course (proxy image)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.course == 'true'
         id: render-course-proxy
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
@@ -233,6 +357,7 @@ jobs:
           image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_COURSE_PROXY }}:${{ env.TAG_SHA }}
 
       - name: Deploy svc-ums-course (ums-course new revision)
+        if: needs.changes.outputs.shared == 'true' || needs.changes.outputs.course == 'true'
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.render-course-proxy.outputs.task-definition }}
